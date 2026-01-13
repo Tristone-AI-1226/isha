@@ -75,17 +75,13 @@ class ScraperTrainer:
         print("  wait <seconds>             : Wait for X seconds")
         print("  scroll                     : Scroll down")
         print("  pod <selector>             : Scan rows, extract attrs, filter by user criteria")
+        print("  scrape                     : Scrape all text content from the current page")
         print("  finish                     : Save and exit")
         print("  quit                       : Exit without saving")
         print("="*50 + "\n")
 
         while True:
             try:
-                # Use standard input (blocking) in a way that plays nice with asyncio?
-                # Actually, input() blocks the event loop. In a simple script this might be okay 
-                # if we don't need background events, but better to use run_in_executor usually.
-                # For simplicity here, we'll just block.
-                
                 cmd_line = input("Trainer> ").strip()
                 if not cmd_line:
                     continue
@@ -105,10 +101,6 @@ class ScraperTrainer:
                     await self.handle_click(args)
 
                 elif action == "type":
-                    # Simple heuristic split for type: "selector" "value"
-                    # This is tricky with spaces. 
-                    # Let's assume syntax: type "selector" "value" OR type selector value
-                    # A better way might be to ask prompts.
                     await self.handle_type(args)
 
                 elif action == "press":
@@ -132,16 +124,18 @@ class ScraperTrainer:
                     print("Scrolled down")
 
                 elif action == "pod":
-                    # args is selector
                     selector = args.strip()
                     if not selector:
-                        print("Usage: pod <selector>")
-                        print("Example: pod .grid-item  (or whatever selector targets the rows)")
-                    else:
-                        await self.handle_pod(selector)
+                        selector = "button" # Default if not provided
+                    await self.handle_pod(selector)
+
+                elif action == "scrape":
+                    print("Scraping all content...")
+                    self.steps.append({"type": "scrape"})
+                    text = await self.page.inner_text("body")
+                    print(f"Captured {len(text)} characters.")
 
                 elif action == "inspect":
-                    # Save current HTML for debugging
                     content = await self.page.content()
                     with open("trainer_inspect.html", "w", encoding="utf-8") as f:
                         f.write(content)
@@ -160,45 +154,27 @@ class ScraperTrainer:
         await self.playwright.stop()
 
     async def handle_click(self, selector_or_text):
-        # clean quotes if present
         target = selector_or_text.strip()
         if (target.startswith('"') and target.endswith('"')) or (target.startswith("'") and target.endswith("'")):
             target = target[1:-1]
             
         print(f"Attempting to click '{target}'...")
         
-        # Strategy:
-        # 1. Try generic selector/text locator
-        # 2. Try strict selector
-        
-        # We need to find the specific Playwright locator that works
-        loc = None
-        method = "text"
-        
         try:
-            # Try finding by text first if it looks like text
-            # Or use 'locator' with text= logic
-            # Let's try to be smart.
-            
-            # Check if visual element exists
             element = self.page.get_by_text(target, exact=False).first
             if await element.count() > 0 and await element.is_visible():
                 await element.click()
-                method = "get_by_text"
-                self.steps.append({"type": "click", "method": method, "target": target})
+                self.steps.append({"type": "click", "method": "get_by_text", "target": target})
                 print("Clicked by text.")
                 return
 
-            # Try selector
             element = self.page.locator(target).first
             if await element.count() > 0 and await element.is_visible():
                 await element.click()
-                method = "locator"
-                self.steps.append({"type": "click", "method": method, "target": target})
+                self.steps.append({"type": "click", "method": "locator", "target": target})
                 print("Clicked by locator.")
                 return
                 
-            # If failed
             print(f"Could not find clickable element for '{target}'")
 
         except Exception as e:
@@ -206,8 +182,6 @@ class ScraperTrainer:
 
 
     async def handle_type(self, args_str):
-        # We need 2 args: target and value
-        # Basic parser for quotes
         import shlex
         try:
             parts = shlex.split(args_str)
@@ -220,12 +194,6 @@ class ScraperTrainer:
             
             print(f"Type '{value}' into '{target}'...")
             
-            # Strategy:
-            # 1. get_by_label
-            # 2. get_by_placeholder
-            # 3. locator
-            
-            # Try label (exact=False to handle "Name *" vs "Name")
             element = self.page.get_by_label(target, exact=False).first
             if await element.count() > 0 and await element.is_visible():
                 await element.fill(value)
@@ -233,7 +201,6 @@ class ScraperTrainer:
                 print("Typed by label (exact=False).")
                 return
 
-            # Try by role (textbox) with name
             element = self.page.get_by_role("textbox", name=target, exact=False).first
             if await element.count() > 0 and await element.is_visible():
                 await element.fill(value)
@@ -241,7 +208,6 @@ class ScraperTrainer:
                 print("Typed by role (textbox).")
                 return
 
-            # Try placeholder
             element = self.page.get_by_placeholder(target, exact=False).first
             if await element.count() > 0 and await element.is_visible():
                 await element.fill(value)
@@ -249,7 +215,6 @@ class ScraperTrainer:
                 print("Typed by placeholder.")
                 return
                 
-            # Try locator (CSS/XPath)
             element = self.page.locator(target).first
             if await element.count() > 0 and await element.is_visible():
                 await element.fill(value)
@@ -257,10 +222,7 @@ class ScraperTrainer:
                 print("Typed by locator.")
                 return
 
-            # Fallback: Try identifying by ID directly if target looks like a common ID word
-            # Often user might type "SearchCriteria" which is the ID
             if not " " in target:
-                 # Try ID
                  element = self.page.locator(f"#{target}").first
                  if await element.count() > 0 and await element.is_visible():
                     await element.fill(value)
@@ -268,7 +230,6 @@ class ScraperTrainer:
                     print("Typed by ID inference.")
                     return
                  
-                 # Try Name
                  element = self.page.locator(f"[name='{target}']").first
                  if await element.count() > 0 and await element.is_visible():
                     await element.fill(value)
@@ -292,14 +253,6 @@ class ScraperTrainer:
             return
 
         print(f"Found {len(rows)} potential rows.")
-        
-        print("\n" + "="*50)
-        print("SCENARIO: You want to select a specific row based on a criteria.")
-        print("Example: If you want the row with 'Date formed: 1/1/2001',")
-        print("Attribute = 'Date formed'")
-        print("Value     = '1/1/2001'")
-        print("This will find the row that contains BOTH strings.")
-        print("="*50)
             
         attr = input("Enter identifying label/text (e.g. 'Date formed'): ").strip()
         val = input(f"Enter value for '{attr}' (e.g. '1/1/2001'): ").strip()
@@ -310,18 +263,15 @@ class ScraperTrainer:
         matched_row = None
         for i, row in enumerate(rows):
             try:
-                # SKIP OPTION: Check visibility first
                 if not await row.is_visible():
                     continue
 
-                # FORCE EXPAND
                 try:
                     await row.click(timeout=1000)
                     await asyncio.sleep(0.5) 
                 except Exception:
                     pass
                 
-                # Check row text, parent, AND grandparent text (for deep nesting)
                 text = await row.inner_text()
                 parent_text = ''
                 grandparent_text = ''
@@ -331,15 +281,10 @@ class ScraperTrainer:
                 except:
                      pass
                 
-                # Combine distinct texts to avoid massive duplication in output, but simple concat for checking
                 combined_check_text = text + ' ' + parent_text + ' ' + grandparent_text
-                
-                # VISUAL FEEDBACK FOR USER
                 preview = text.replace('\n', ' ')[:100]
                 print(f"  [Row {i}] Text: {preview}...")
-                # print(f"           Parent+: {parent_text[:50]}...")
 
-                # Case insensitive check
                 if attr.lower() in combined_check_text.lower() and val.lower() in combined_check_text.lower():
                     print(f"Match found in Row {i}!")
                     matched_row = row
@@ -357,164 +302,235 @@ class ScraperTrainer:
         filename = "generated_scraper.py"
         print(f"Generating {filename}...")
         
+        search_step_idx = -1
+        pod_step_idx = -1
+        for i, s in enumerate(self.steps):
+            if s['type'] == 'type' and search_step_idx == -1: search_step_idx = i
+            if s['type'] == 'pod' and pod_step_idx == -1: pod_step_idx = i
+
         code = [
             "import asyncio",
             "import sys",
+            "import os",
+            "import re",
+            "import pandas as pd",
             "from pathlib import Path",
+            "from dateutil import parser",
             "from playwright.async_api import async_playwright",
             "",
-            "# Add current directory to path",
             "sys.path.insert(0, str(Path(__file__).parent))",
             "from browser.cf_solver import get_cf_cookies",
+            "",
+            "def scrape_all_fields(text):",
+            "    data = {}",
+            "    lines = [l.strip() for l in text.split('\\n') if l.strip()]",
+            "    block_headers = ['Registered Office address', 'Registered Mailing address', 'Mailing address', 'Principal Office address']",
+            "    current_key = None",
+            "    current_val_lines = []",
+            "    for line in lines:",
+            "        if ':' in line:",
+            "             parts = line.split(':', 1)",
+            "             potential_key = parts[0].strip()",
+            "             potential_val = parts[1].strip()",
+            "             if len(potential_key) < 60:",
+            "                 if current_key: data[current_key] = ' '.join(current_val_lines).strip()",
+            "                 current_key = potential_key",
+            "                 current_val_lines = [potential_val] if potential_val else []",
+            "                 continue",
+            "        is_header = False",
+            "        for h in block_headers:",
+            "            if h.lower() == line.lower():",
+            "                if current_key: data[current_key] = ' '.join(current_val_lines).strip()",
+            "                current_key = line",
+            "                current_val_lines = []",
+            "                is_header = True",
+            "                break",
+            "        if is_header: continue",
+            "        if current_key: current_val_lines.append(line)",
+            "    if current_key: data[current_key] = ' '.join(current_val_lines).strip()",
+            "    # Date Normalization",
+            "    for k, v in data.items():",
+            "        if re.search(r'\\d+[/-]\\d+[/-]\\d+', v):",
+            "            try:",
+            "                dt = parser.parse(v)",
+            "                data[k] = dt.strftime('%m/%d/%Y')",
+            "            except: pass",
+            "    return data",
             "",
             "async def pod(page, selector, attribute, target_value):",
             "    print(f\"Running POD: Finding row containing '{attribute}' and '{target_value}'...\")",
             "    rows = await page.locator(selector).all()",
             "    for i, row in enumerate(rows):",
             "        try:",
-            "            # Expand row",
             "            if await row.is_visible():",
-            "                await row.click(timeout=1000)",
-            "                await asyncio.sleep(0.5)",
-            "        except Exception:",
+            "                await row.scroll_into_view_if_needed()",
+            "                panel_id = await row.get_attribute('aria-controls')",
+            "                try:",
+            "                    await row.click(timeout=1000)",
+            "                    await asyncio.sleep(0.5)",
+            "                except: pass",
+            "                ",
+            "                text = await row.inner_text()",
+            "                panel_text = ''",
+            "                if panel_id:",
+            "                    panel = page.locator(f'#{panel_id}')",
+            "                    if await panel.count() > 0:",
+            "                        try: panel_text = await panel.inner_text()",
+            "                        except: pass",
+            "                combined_text = text + ' ' + panel_text",
+            "                ",
+            "                # Normalize target if date",
+            "                target_str = str(target_value).strip()",
+            "                try:",
+            "                    target_dt = parser.parse(target_str)",
+            "                    target_norm = target_dt.strftime('%m/%d/%Y')",
+            "                except:",
+            "                    target_dt = None",
+            "                    target_norm = target_str",
+            "                ",
+            "                # 1. Direct String Match (Original & Normalized)",
+            "                if attribute.lower() in combined_text.lower():",
+            "                    if target_str.lower() in combined_text.lower() or target_norm.lower() in combined_text.lower():",
+            "                         print(f\"POD Match Found in Row {i}...\")",
+            "                         return row",
+            "                    ",
+            "                    # 2. Fuzzy Date Match",
+            "                    if target_dt:",
+            "                        # Regex find all date-like strings and compare",
+            "                        dates = re.findall(r'\\d+[/-]\\d+[/-]\\d+', combined_text)",
+            "                        for d_str in dates:",
+            "                            try:",
+            "                                found_dt = parser.parse(d_str)",
+            "                                if found_dt.date() == target_dt.date():",
+            "                                     print(f\"POD Match (Fuzzy Date) in Row {i}: {d_str}\")",
+            "                                     return row",
+            "                            except: pass",
+            "        except Exception as e: ",
+            "            # print(f\"Row check failed: {e}\")",
             "            pass",
-            "",
-            "        # Check row text, parent, AND grandparent text (in case of accordion sibling)",
-            "        text = await row.inner_text()",
-            "        parent_text = ''",
-            "        grandparent_text = ''",
-            "        try:",
-            "             parent_text = await row.locator('..').inner_text()",
-            "             grandparent_text = await row.locator('../..').inner_text()",
-            "        except:",
-            "             pass",
-            "        ",
-            "        combined_text = text + ' ' + parent_text + ' ' + grandparent_text",
-            "        if attribute.lower() in combined_text.lower() and target_value.lower() in combined_text.lower():",
-            "            print(f\"POD Match Found in Row {i}...\")",
-            "            await row.scroll_into_view_if_needed()",
-            "            # Ensure it stays expanded",
-            "            await row.click(force=True)",
-            "            return row",
             "    print(\"POD: No match found.\")",
             "    return None",
             "",
-            "async def run():",
-            "    # Start URL",
-            f"    url = '{self.start_url}'",
-            "",
+            "async def setup_browser():",
+            "    url = 'https://sosnc.gov/online_services/search/by_title/search_Business_Registration'",
             "    print('Solving Cloudflare challenge...')",
             "    cookies, user_agent = await get_cf_cookies(url, headless=False)",
+            "    p = await async_playwright().start()",
+            "    browser = await p.chromium.launch(headless=False)",
+            "    context = await browser.new_context(user_agent=user_agent)",
+            "    await context.add_init_script(\"Object.defineProperty(navigator, 'webdriver', {get: () => undefined})\")",
+            "    if cookies:",
+            "        cl = [{k: v for k, v in c.items() if k in ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite']} for c in cookies]",
+            "        await context.add_cookies(cl)",
+            "    page = await context.new_page()",
+            "    return p, browser, context, page",
             "",
-            "    async with async_playwright() as p:",
-            "        browser = await p.chromium.launch(headless=False)",
-            "        context = await browser.new_context(user_agent=user_agent)",
-            "        ",
-            "        if cookies:",
-            "            clean_cookies = []",
-            "            for c in cookies:",
-            "                c_clean = {k: v for k, v in c.items() if k in ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite']}",
-            "                clean_cookies.append(c_clean)",
-            "            await context.add_cookies(clean_cookies)",
-            "",
-            "        page = await context.new_page()",
-            ""
+            "async def scrape_company(page, company_name, pod_attr, pod_value):",
+            "    print(f\"\\nProcessing: {company_name} (POD: {pod_value})\")",
+            f"    await page.goto('{self.start_url}')"
         ]
-        
-        code.append("    # Steps")
-        
+
+        # Generate steps
         pod_active = False
-        
-        for step in self.steps:
+        indent = "    "
+        for i, step in enumerate(self.steps):
+            if step['type'] == 'navigate': continue 
             stype = step["type"]
             line = ""
+            curr_indent = indent + ("    " if pod_active else "")
             
-            if stype == "navigate":
-                line = f"        await page.goto('{step['url']}')"
-            
-            elif stype == "click":
+            if stype == "click":
                 target = step['target']
-                # Determine method string
-                if step['method'] == "get_by_text":
-                    locator_str = f"get_by_text('{target}', exact=False).first"
-                else:
-                    locator_str = f"locator('{target}').first"
-                
-                # If POD is active, use matched_row ONLY but via ARIA panel
+                locator_str = f"get_by_text('{target}', exact=False).first" if step['method'] == "get_by_text" else f"locator('{target}').first"
                 if pod_active:
-                    code.append(f"        if matched_row:")
-                    code.append(f"            # 1. Get Panel ID")
-                    code.append(f"            panel_id = await matched_row.get_attribute('aria-controls')")
-                    code.append(f"            # 2. Expand Row (Try clicking search term or just row)")
-                    code.append(f"            try:")
-                    code.append(f"                 await matched_row.get_by_text('Rely', exact=False).click()")
-                    code.append(f"            except:")
-                    code.append(f"                 await matched_row.click()")
-                    code.append(f"            await asyncio.sleep(1)")
-                    code.append(f"            # 3. Click inside Panel")
-                    code.append(f"            if panel_id:")
-                    code.append(f"                await page.locator(f'#{{panel_id}}').{locator_str}.click()")
-                    code.append(f"            else:")
-                    code.append(f"                # Fallback: strict sibling")
-                    code.append(f"                await matched_row.locator('xpath=./../following-sibling::*[1]').{locator_str}.click()")
-                    line = "" # Handled above
+                    code.append(f"{curr_indent}if matched_row:")
+                    code.append(f"{curr_indent}    panel_id = await matched_row.get_attribute('aria-controls')")
+                    code.append(f"{curr_indent}    should_expand = True")
+                    code.append(f"{curr_indent}    if panel_id:")
+                    code.append(f"{curr_indent}        panel = page.locator(f'#{{panel_id}}')")
+                    code.append(f"{curr_indent}        if await panel.is_visible(): should_expand = False")
+                    code.append(f"{curr_indent}    if should_expand:")
+                    code.append(f"{curr_indent}        try: await matched_row.click(timeout=1000); await asyncio.sleep(1)")
+                    code.append(f"{curr_indent}        except: pass")
+                    code.append(f"{curr_indent}    if panel_id: await page.locator(f'#{{panel_id}}').{locator_str}.click()")
+                    code.append(f"{curr_indent}    else: await matched_row.locator('xpath=./following-sibling::*[1]').{locator_str}.click()")
                 else:
-                    line = f"        await page.{{locator_str}}.click()"
-            
+                    code.append(f"{curr_indent}await page.{locator_str}.click()")
+
             elif stype == "type":
                 target = step['target']
-                val = step['value']
+                val = "company_name" if i == search_step_idx else f"'{step['value']}'"
                 method = step['method']
-                if method == "get_by_label":
-                    line = f"        await page.get_by_label('{target}', exact=False).first.fill('{val}')"
-                elif method == "get_by_role":
-                    line = f"        await page.get_by_role('textbox', name='{target}', exact=False).first.fill('{val}')"
-                elif method == "get_by_placeholder":
-                    line = f"        await page.get_by_placeholder('{target}', exact=False).first.fill('{val}')"
-                else:
-                    line = f"        await page.locator('{target}').first.fill('{val}')"
+                if method == "get_by_label": line = f"{curr_indent}await page.get_by_label('{target}', exact=False).first.fill({val})"
+                else: line = f"{curr_indent}await page.locator('{target}').first.fill({val})"
 
             elif stype == "press":
-                line = f"        await page.keyboard.press('{step['key']}')"
+                line = f"{curr_indent}await page.keyboard.press('{step['key']}')"
                 if step['key'].lower() == "enter":
                     code.append(line)
-                    line = "        await page.wait_for_load_state('networkidle')"
+                    line = f"{curr_indent}await page.wait_for_load_state('networkidle')"
                 
-            elif stype == "wait":
-                line = f"        await asyncio.sleep({step['seconds']})"
-            
-            elif stype == "scroll":
-                line = "        await page.evaluate('window.scrollBy(0, 500)')"
-                
+            elif stype == "wait": line = f"{curr_indent}await asyncio.sleep({step['seconds']})"
+            elif stype == "scroll": line = f"{curr_indent}await page.evaluate('window.scrollBy(0, 500)')"
             elif stype == "pod":
                 sel = step['selector']
-                attr = step['attribute']
-                val = step['value']
-                # Assign result to matched_row and enable context
-                code.append(f"        matched_row = await pod(page, '{sel}', '{attr}', '{val}')")
+                attr = "pod_attr" if i == pod_step_idx else f"'{step['attribute']}'"
+                val = "pod_value" if i == pod_step_idx else f"'{step['value']}'"
+                code.append(f"{indent}matched_row = await pod(page, '{sel}', {attr}, {val})")
+                code.append(f"{indent}if matched_row:")
                 pod_active = True
-                line = "" 
+                line = ""
 
-            if line:
-                code.append(line)
-        
-        # Add scrape step at end
-        code.append("")
-        code.append("        # Scrape Content")
-        code.append("        print('Waiting for page to assume final state...')")
-        code.append("        await page.wait_for_load_state('networkidle')")
-        code.append("        await asyncio.sleep(2)")
-        code.append("        content = await page.content()")
-        code.append("        print(await page.evaluate('document.body.innerText'))")
-        code.append("        await browser.close()")
-        code.append("")
-        code.append("if __name__ == '__main__':")
-        code.append("    asyncio.run(run())")
+            elif stype == "scrape":
+                code.append(f"{curr_indent}await page.wait_for_load_state('networkidle')")
+                code.append(f"{curr_indent}await asyncio.sleep(2)")
+                code.append(f"{curr_indent}raw_text = await page.evaluate('document.body.innerText')")
+                code.append(f"{curr_indent}return scrape_all_fields(raw_text)")
+
+            if line: code.append(line)
+
+        final_indent = indent + ("    " if pod_active else "")
+        # Add fallback scrape if user forgot 'scrape' command, OR just indentation closure
+        code.extend([
+            f"{indent}else:",
+            f"{indent}    print(f'No match found for {{company_name}}')",
+            f"{indent}    return None",
+            "",
+            "async def run():",
+            "    excel_path = 'Sample Companies - SoS.xlsx'",
+            "    if not os.path.exists(excel_path): return",
+            "    df = pd.read_excel(excel_path)",
+            "    pod_attribute = df.columns[1]",
+            "    playwright_instance, browser, context, page = await setup_browser()",
+            "    results = []",
+            "    for _, row in df.iterrows():",
+            "        company = str(row.iloc[0]).strip()",
+            "        val = str(row.iloc[1]).strip()",
+            "        if '00:00:00' in val: val = val.split(' ')[0]",
+            "        max_retries = 1",
+            "        for attempt in range(max_retries + 1):",
+            "            try:",
+            "                data = await scrape_company(page, company, pod_attribute, val)",
+            "                if data: data['Company'] = company; results.append(data); break",
+            "                else: break",
+            "            except Exception as e:",
+            "                print(f'Error: {e}')",
+            "                if attempt < max_retries:",
+            "                    print('Retrying with new session...')",
+            "                    try: await context.close(); await browser.close(); await playwright_instance.stop()",
+            "                    except: pass",
+            "                    playwright_instance, browser, context, page = await setup_browser()",
+            "        pd.DataFrame(results).to_json('scraped_results.json', orient='records', indent=4)",
+            "    await browser.close()",
+            "    await playwright_instance.stop()",
+            "",
+            "if __name__ == '__main__':",
+            "    asyncio.run(run())"
+        ])
         
         with open(filename, "w", encoding="utf-8") as f:
             f.write("\n".join(code))
-        
-        print(f"Script generated: {filename}")
+        print(f"Batch Script generated: {filename}")
 
 
 def main():
