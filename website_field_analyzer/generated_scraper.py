@@ -120,7 +120,6 @@ async def scrape_company(page, company_name, pod_attr, pod_value):
     await page.get_by_label('Organizational name', exact=False).first.fill(company_name)
     await page.keyboard.press('Enter')
     await page.wait_for_load_state('networkidle')
-    await asyncio.sleep(5.0)
     matched_row = await pod(page, 'button', pod_attr, pod_value)
     if matched_row:
         if matched_row:
@@ -132,8 +131,8 @@ async def scrape_company(page, company_name, pod_attr, pod_value):
             if should_expand:
                 try: await matched_row.click(timeout=1000); await asyncio.sleep(1)
                 except: pass
-            if panel_id: await page.locator(f'#{panel_id}').get_by_text('More information', exact=False).first.click()
-            else: await matched_row.locator('xpath=./following-sibling::*[1]').get_by_text('More information', exact=False).first.click()
+            if panel_id: await page.locator(f'#{panel_id}').get_by_text('More Information', exact=False).first.click()
+            else: await matched_row.locator('xpath=./following-sibling::*[1]').get_by_text('More Information', exact=False).first.click()
         await page.wait_for_load_state('networkidle')
         await asyncio.sleep(2)
         raw_text = await page.evaluate('document.body.innerText')

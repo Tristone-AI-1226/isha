@@ -22,7 +22,10 @@ class ScraperTrainer:
 
     async def start(self):
         print(f"Starting Trainer...")
-        
+        await self.initialize_session()
+        await self.command_loop()
+
+    async def initialize_session(self):
         # 0. Solve Cloudflare (Visible)
         print("Solving Cloudflare challenge first...")
         try:
@@ -63,7 +66,65 @@ class ScraperTrainer:
         except Exception as e:
             print(f"Error navigating: {e}")
 
-        await self.command_loop()
+    async def execute_command(self, action: str, args: str = "") -> str:
+        """Execute a single command and return a status message."""
+        if action == "quit":
+            return "quit"
+        
+        elif action == "finish":
+            self.generate_script()
+            return "finished"
+
+        elif action == "click":
+            await self.handle_click(args)
+
+        elif action == "type":
+            await self.handle_type(args)
+
+        elif action == "press":
+            key = args.strip()
+            await self.page.keyboard.press(key)
+            self.steps.append({"type": "press", "key": key})
+            print(f"Pressed '{key}'")
+
+        elif action == "wait":
+            try:
+                secs = float(args.strip())
+                await asyncio.sleep(secs)
+                self.steps.append({"type": "wait", "seconds": secs})
+                print(f"Waited {secs}s")
+            except ValueError:
+                print("Invalid seconds")
+
+        elif action == "scroll":
+            await self.page.evaluate("window.scrollBy(0, 500)")
+            self.steps.append({"type": "scroll"})
+            print("Scrolled down")
+
+        elif action == "pod":
+            selector = args.strip()
+            if not selector:
+                selector = "button" # Default if not provided
+            await self.handle_pod(selector)
+
+        elif action == "scrape":
+            print("Scraping all content...")
+            self.steps.append({"type": "scrape"})
+            text = await self.page.inner_text("body")
+            print(f"Captured {len(text)} characters.")
+            return f"Captured {len(text)} characters."
+
+        elif action == "inspect":
+            content = await self.page.content()
+            with open("trainer_inspect.html", "w", encoding="utf-8") as f:
+                f.write(content)
+            print("Saved trainer_inspect.html")
+
+        else:
+            print(f"Unknown command: {action}")
+            return f"Unknown command: {action}"
+            
+        return "done"
 
     async def command_loop(self):
         print("\n" + "="*50)
@@ -90,59 +151,12 @@ class ScraperTrainer:
                 action = parts[0].lower()
                 args = parts[1] if len(parts) > 1 else ""
 
-                if action == "quit":
+                result = await self.execute_command(action, args)
+                if result == "quit":
                     break
-                
-                elif action == "finish":
-                    self.generate_script()
+                elif result == "finished":
                     break
 
-                elif action == "click":
-                    await self.handle_click(args)
-
-                elif action == "type":
-                    await self.handle_type(args)
-
-                elif action == "press":
-                    key = args.strip()
-                    await self.page.keyboard.press(key)
-                    self.steps.append({"type": "press", "key": key})
-                    print(f"Pressed '{key}'")
-
-                elif action == "wait":
-                    try:
-                        secs = float(args.strip())
-                        await asyncio.sleep(secs)
-                        self.steps.append({"type": "wait", "seconds": secs})
-                        print(f"Waited {secs}s")
-                    except ValueError:
-                        print("Invalid seconds")
-
-                elif action == "scroll":
-                    await self.page.evaluate("window.scrollBy(0, 500)")
-                    self.steps.append({"type": "scroll"})
-                    print("Scrolled down")
-
-                elif action == "pod":
-                    selector = args.strip()
-                    if not selector:
-                        selector = "button" # Default if not provided
-                    await self.handle_pod(selector)
-
-                elif action == "scrape":
-                    print("Scraping all content...")
-                    self.steps.append({"type": "scrape"})
-                    text = await self.page.inner_text("body")
-                    print(f"Captured {len(text)} characters.")
-
-                elif action == "inspect":
-                    content = await self.page.content()
-                    with open("trainer_inspect.html", "w", encoding="utf-8") as f:
-                        f.write(content)
-                    print("Saved trainer_inspect.html")
-
-                else:
-                    print(f"Unknown command: {action}")
 
             except KeyboardInterrupt:
                 break
@@ -165,7 +179,14 @@ class ScraperTrainer:
             if await element.count() > 0 and await element.is_visible():
                 await element.click()
                 self.steps.append({"type": "click", "method": "get_by_text", "target": target})
-                print("Clicked by text.")
+                print("Clicked by text (exact).")
+                return
+
+            element = self.page.get_by_text(target, exact=False).first
+            if await element.count() > 0 and await element.is_visible():
+                await element.click()
+                self.steps.append({"type": "click", "method": "get_by_text_fuzzy", "target": target})
+                print("Clicked by text (fuzzy).")
                 return
 
             element = self.page.locator(target).first
@@ -245,6 +266,15 @@ class ScraperTrainer:
             print(f"Type failed: {e}")
 
     async def handle_pod(self, selector):
+        attr = "Date formed" # default
+        val = "1/1/2001" # default
+        
+        if "|" in selector:
+             parts = selector.split("|")
+             selector = parts[0].strip()
+             if len(parts) > 1: attr = parts[1].strip()
+             if len(parts) > 2: val = parts[2].strip()
+
         print(f"Scanning rows with selector '{selector}'...")
         rows = await self.page.locator(selector).all()
         
@@ -253,10 +283,7 @@ class ScraperTrainer:
             return
 
         print(f"Found {len(rows)} potential rows.")
-            
-        attr = input("Enter identifying label/text (e.g. 'Date formed'): ").strip()
-        val = input(f"Enter value for '{attr}' (e.g. '1/1/2001'): ").strip()
-        
+
         print(f"Searching for row containing '{attr}' AND '{val}'...")
         print("Expanding and scanning each row (this may take a moment)...")
         
